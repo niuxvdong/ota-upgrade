@@ -1161,6 +1161,8 @@ class MultiDeviceManager:
         self.lock = threading.Lock()
         self.multi_mode = False          # 是否启用多终端
         self.device_ids = [m.DEVICE_ID]  # 终端列表
+        # ★ 顶部输入框的 deviceId（由前端同步，不依赖连接后的 config）
+        self.top_device_id = m.DEVICE_ID
         self.managers = {}               # deviceId -> DeviceManager
         self._agg_log = []               # 聚合日志（带 deviceId 前缀）
         self.max_agg_logs = 600
@@ -1194,10 +1196,13 @@ class MultiDeviceManager:
                 self._agg_log = self._agg_log[-self.max_agg_logs:]
 
     # ---------- 终端列表管理 ----------
-    def set_multi_mode(self, enabled, device_ids=None):
-        """启用/禁用多终端，并可设置 deviceId 列表"""
+    def set_multi_mode(self, enabled, device_ids=None, top_device_id=None):
+        """启用/禁用多终端，并可设置 deviceId 列表与顶部 deviceId"""
         with self.lock:
             self.multi_mode = bool(enabled)
+            if top_device_id is not None:
+                # ★ 空字符串表示"顶部未填 deviceId"，置空而不是兜底成 0001
+                self.top_device_id = str(top_device_id).strip()
             if device_ids:
                 clean = [str(x).strip() for x in device_ids if str(x).strip()]
                 # 去重保序
@@ -1219,6 +1224,7 @@ class MultiDeviceManager:
             MANAGER._persist("multiMode", {
                 "enabled": self.multi_mode,
                 "deviceIds": self.device_ids,
+                "topDeviceId": self.top_device_id,
             })
         except Exception:
             pass
@@ -1232,6 +1238,9 @@ class MultiDeviceManager:
                 ids = mc.get("deviceIds") or []
                 if ids:
                     self.device_ids = [str(x) for x in ids]
+                tdid = mc.get("topDeviceId")
+                if tdid:
+                    self.top_device_id = str(tdid)
                 MANAGER.log("[配置] 已加载多终端设置：%s，%d 个终端"
                             % ("多终端" if self.multi_mode else "单终端",
                                len(self.device_ids)))
@@ -1248,13 +1257,12 @@ class MultiDeviceManager:
         with self.lock:
             multi = self.multi_mode
             ids = list(self.device_ids)
-            top_dev = (MANAGER.config or {}).get("deviceId") or m.DEVICE_ID
+            # ★ 用前端同步的 top_device_id，为空表示顶部未填
+            top_dev = (self.top_device_id or "").strip()
 
         if not multi:
-            # 单终端：只用顶部 deviceId
+            # 单终端：只用顶部 deviceId（为空才兜底）
             did = top_dev or m.DEVICE_ID
-            if did == m.DEVICE_ID and not self.managers:
-                return [(did, MANAGER)]
             if did == m.DEVICE_ID:
                 return [(did, MANAGER)]
             return [(did, self._get_or_create(did))]
@@ -1272,9 +1280,7 @@ class MultiDeviceManager:
 
         out = []
         for did in merged:
-            if did == m.DEVICE_ID and not self.managers:
-                out.append((did, MANAGER))
-            elif did == (MANAGER.config or {}).get("deviceId"):
+            if did == m.DEVICE_ID:
                 out.append((did, MANAGER))
             else:
                 out.append((did, self._get_or_create(did)))

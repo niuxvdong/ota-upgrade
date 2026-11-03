@@ -905,6 +905,17 @@ function afterConfigLoaded() {
   refreshRegisterPreview();
   buildTopicOptions();
   initAutoWidth();
+  // ★ 把顶部 deviceId 同步到后端（多终端合并需要）
+  setTimeout(function () {
+    fetch("/api/multi/config", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: multiEnabled,
+        deviceIds: getMultiIds(),
+        topDeviceId: v("deviceId") || ""
+      })
+    }).catch(function () {});
+  }, 200);
 }
 
 // ==================== 连接 ====================
@@ -973,29 +984,35 @@ function onMultiModeChange() {
   multiEnabled = cb.checked;
   var box = document.getElementById("multiBox");
   if (box) box.style.display = multiEnabled ? "block" : "none";
-  if (multiEnabled && !document.getElementById("multiIds").value.trim()) {
-    // 默认填入当前 deviceId
-    var cur = v("deviceId") || "DEVICE-0001";
-    document.getElementById("multiIds").value = cur;
-  }
+  // ★ 不再自动把顶部 deviceId 塞进列表（顶部会单独参与合并）
+  pushMultiConfig();
+}
+
+// 统一提交多终端配置（含顶部 deviceId）
+function pushMultiConfig() {
   fetch("/api/multi/config", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ enabled: multiEnabled, deviceIds: getMultiIds() })
+    body: JSON.stringify({
+      enabled: multiEnabled,
+      deviceIds: getMultiIds(),
+      topDeviceId: v("deviceId") || ""
+    })
   }).then(function (r) { return r.json(); }).then(function (d) {
-    toast(d.msg, d.ok);
+    if (d.msg) toast(d.msg, d.ok);
     updateMultiHint();
     pollStatus();
-  });
+  }).catch(function () {});
 }
 
 function connectAll() {
   if (!multiEnabled) { connect(); return; }
   var ids = getMultiIds();
   if (!ids.length) { toast("请至少填写一个 deviceId", false); return; }
-  // 先保存配置
+  // 先保存配置（含顶部 deviceId）
   fetch("/api/multi/config", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ enabled: true, deviceIds: ids })
+    body: JSON.stringify({ enabled: true, deviceIds: ids,
+                           topDeviceId: v("deviceId") || "" })
   }).then(function () {
     var body = {
       host: v("host"), port: parseInt(v("port") || "2883", 10),
@@ -1853,6 +1870,19 @@ function syncRegisterField(field, value) {
 
 function onDeviceIdChange() {
   buildTopicOptions();
+  // ★ 同步顶部 deviceId 到后端（多终端合并用）
+  clearTimeout(window.__topDevTimer);
+  window.__topDevTimer = setTimeout(function () {
+    if (typeof multiEnabled !== "undefined" && multiEnabled) {
+      pushMultiConfig();
+    } else {
+      fetch("/api/multi/config", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: false,
+                               topDeviceId: v("deviceId") || "" })
+      }).catch(function () {});
+    }
+  }, 500);
   var dev = v("deviceId");
   var sendTa = document.getElementById("sendPayload");
   if (sendTa && sendTa.value.trim()) {
@@ -2718,7 +2748,8 @@ class Handler(BaseHTTPRequestHandler):
                 ok, msg = MANAGER.delete_custom_scenario(body.get("name"))
             elif path == "/api/multi/config":
                 ok, msg = MULTI.set_multi_mode(
-                    body.get("enabled"), body.get("deviceIds"))
+                    body.get("enabled"), body.get("deviceIds"),
+                    body.get("topDeviceId"))
             elif path == "/api/connect-all":
                 MULTI.sync_all_settings()
                 devs = MULTI.device_ids if MULTI.multi_mode else [v("deviceId") or m.DEVICE_ID]
