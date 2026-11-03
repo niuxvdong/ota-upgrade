@@ -50,21 +50,28 @@ STATUS_EXTRA = {
 
 # 默认状态按钮
 DEFAULT_STATUS_BUTTONS = [
-    {"code": 5,  "name": "待稳定入网",     "cls": "st-oth",  "auto": True},
-    {"code": 20, "name": "推送下发成功",   "cls": "st-push", "auto": True},
-    {"code": 10, "name": "升级包下载中",   "cls": "st-push", "auto": False},
-    {"code": 18, "name": "下载中断",       "cls": "st-push", "auto": False},
-    {"code": 26, "name": "续传中",         "cls": "st-push", "auto": True},
-    {"code": 15, "name": "验签失败",       "cls": "st-fail", "auto": False},
-    {"code": 14, "name": "下载完成待升级", "cls": "st-push", "auto": False},
-    {"code": 29, "name": "下载失败",       "cls": "st-fail", "auto": False},
-    {"code": 22, "name": "升级下发成功",   "cls": "st-up",   "auto": True},
-    {"code": 11, "name": "终端升级中",     "cls": "st-up",   "auto": False},
-    {"code": 12, "name": "升级成功",       "cls": "st-up",   "auto": False},
-    {"code": 13, "name": "升级失败",       "cls": "st-fail", "auto": False},
-    {"code": 24, "name": "删除包成功",     "cls": "st-oth",  "auto": False},
-    {"code": 25, "name": "删除包失败",     "cls": "st-oth",  "auto": False},
-    {"code": 0,  "name": "不回(触发超时)", "cls": "st-fail", "auto": False},
+    # ---- 推送/下载阶段 ----
+    {"code": 5,   "name": "待稳定入网",     "cls": "st-oth",  "auto": True},
+    {"code": 20,  "name": "推送下发成功",   "cls": "st-push", "auto": True},
+    {"code": 21,  "name": "推送接收失败",   "cls": "st-fail", "auto": True},
+    {"code": 10,  "name": "升级包下载中",   "cls": "st-push", "auto": False},
+    {"code": 18,  "name": "下载中断",       "cls": "st-push", "auto": False},
+    {"code": 26,  "name": "续传中",         "cls": "st-push", "auto": True},
+    {"code": 15,  "name": "验签失败",       "cls": "st-fail", "auto": False},
+    {"code": 14,  "name": "下载完成待升级", "cls": "st-push", "auto": False},
+    {"code": 29,  "name": "下载失败",       "cls": "st-fail", "auto": False},
+    {"code": -10, "name": "升级包已失效",   "cls": "st-fail", "auto": True},
+    # ---- 升级阶段 ----
+    {"code": 22,  "name": "升级下发成功",   "cls": "st-up",   "auto": True},
+    {"code": 23,  "name": "升级接收失败",   "cls": "st-fail", "auto": True},
+    {"code": 11,  "name": "终端升级中",     "cls": "st-up",   "auto": False},
+    {"code": 12,  "name": "升级成功",       "cls": "st-up",   "auto": False},
+    {"code": 13,  "name": "升级失败",       "cls": "st-fail", "auto": False},
+    # ---- 删包 ----
+    {"code": 24,  "name": "删除包成功",     "cls": "st-oth",  "auto": False},
+    {"code": 25,  "name": "删除包失败",     "cls": "st-oth",  "auto": False},
+    # ---- 特殊 ----
+    {"code": 0,   "name": "不回(触发超时)", "cls": "st-fail", "auto": False},
 ]
 
 
@@ -1233,17 +1240,45 @@ class MultiDeviceManager:
 
     # ---------- 目标终端 ----------
     def targets(self):
-        """当前需要操作的 manager 列表"""
+        """当前需要操作的 manager 列表
+
+        ★ 多终端模式下，顶部的单一 deviceId 也会生效：
+          把「顶部 deviceId」与「多选列表」合并去重。
+        """
         with self.lock:
             multi = self.multi_mode
             ids = list(self.device_ids)
-        if not multi or len(ids) <= 1:
-            # 单终端：用主 MANAGER
-            did = ids[0] if ids else m.DEVICE_ID
-            if did == m.DEVICE_ID or not self.managers:
+            top_dev = (MANAGER.config or {}).get("deviceId") or m.DEVICE_ID
+
+        if not multi:
+            # 单终端：只用顶部 deviceId
+            did = top_dev or m.DEVICE_ID
+            if did == m.DEVICE_ID and not self.managers:
+                return [(did, MANAGER)]
+            if did == m.DEVICE_ID:
                 return [(did, MANAGER)]
             return [(did, self._get_or_create(did))]
-        return [(did, self._get_or_create(did)) for did in ids]
+
+        # 多终端：顶部 deviceId + 多选列表，去重保序
+        merged = []
+        seen = set()
+        for d in ([top_dev] if top_dev else []) + ids:
+            d = (d or "").strip()
+            if d and d not in seen:
+                seen.add(d)
+                merged.append(d)
+        if not merged:
+            merged = [m.DEVICE_ID]
+
+        out = []
+        for did in merged:
+            if did == m.DEVICE_ID and not self.managers:
+                out.append((did, MANAGER))
+            elif did == (MANAGER.config or {}).get("deviceId"):
+                out.append((did, MANAGER))
+            else:
+                out.append((did, self._get_or_create(did)))
+        return out
 
     def primary(self):
         """主 manager（用于读取共享配置）"""

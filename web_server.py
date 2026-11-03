@@ -222,7 +222,17 @@ PAGE = r"""<!DOCTYPE html>
   .last-cmd b { color: #2b6cb0; font-weight: 700; }
 
   /* ---------- 消息 ---------- */
-  .msgs { flex: 1; overflow-y: auto; padding: 9px; background: #f7f9fc; min-height: 0; }
+  .msgs {
+    flex: 1; overflow-y: auto; padding: 9px; background: #f7f9fc; min-height: 0;
+    /* 允许正常选中与复制 */
+    user-select: text; -webkit-user-select: text;
+    cursor: text;
+    /* 拖选文字时不让浏览器平滑滚动干扰 */
+    scroll-behavior: auto;
+  }
+  .msgs .msg, .msgs .msg * {
+    user-select: text; -webkit-user-select: text;
+  }
   .msg {
     background: #fff; border: 1px solid #e2e8f0; border-radius: 6px;
     margin-bottom: 6px; overflow: hidden; font-size: 12px;
@@ -1202,22 +1212,34 @@ function fillRequestIdFor(deviceId) {
     toast("终端 " + deviceId + " 还没有收到命令", false);
     return;
   }
-  var payload = {
-    deviceId: deviceId,
-    requestId: c.requestId,
-    commandType: resolveCmdType(14),
-    code: 200, msg: "success",
-    timestamp: Date.now(),
-    data: { status: 14, moduleType: getModuleType() }
-  };
+  fillRequestIdInto(deviceId, c.requestId);
   var ta = document.getElementById("sendPayload");
-  ta.value = JSON.stringify(payload, null, 2);
-  autoGrowTextarea(ta);
-  setSendTopic("access/device/executetask/result");
-  saveSendBox();
-  toast("已填入 " + deviceId + " 的 requestId", true);
   ta.scrollIntoView({ behavior: "smooth", block: "center" });
   ta.focus();
+}
+
+// ★ 只替换 requestId，不改动报文其它内容
+function fillRequestIdInto(deviceId, requestId) {
+  var ta = document.getElementById("sendPayload");
+  var cur = (ta.value || "").trim();
+  var obj = null;
+  if (cur) {
+    try { obj = JSON.parse(cur); } catch (e) { obj = null; }
+  }
+  if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+    // 已有合法 JSON：只改 requestId（和设备 id，若指定）
+    obj.requestId = requestId;
+    if (deviceId) obj.deviceId = deviceId;
+    ta.value = JSON.stringify(obj, null, 2);
+  } else {
+    // 当前不是合法 JSON 对象 → 生成最小骨架
+    obj = { deviceId: deviceId || v("deviceId") || "DEVICE-0001",
+            requestId: requestId };
+    ta.value = JSON.stringify(obj, null, 2);
+  }
+  autoGrowTextarea(ta);
+  saveSendBox();
+  toast("已填入 requestId" + (deviceId ? "（" + deviceId + "）" : ""), true);
 }
 
 function fillRequestId() {
@@ -1225,20 +1247,7 @@ function fillRequestId() {
     toast("还没有收到命令，无法填充", false);
     return;
   }
-  var payload = {
-    deviceId: v("deviceId") || "DEVICE-0001",
-    requestId: lastCmdCache.requestId,
-    commandType: resolveCmdType(14),
-    code: 200, msg: "success",
-    timestamp: Date.now(),
-    data: { status: 14, moduleType: getModuleType() }
-  };
-  var ta = document.getElementById("sendPayload");
-  ta.value = JSON.stringify(payload, null, 2);
-  autoGrowTextarea(ta);
-  setSendTopic("access/device/executetask/result");
-  saveSendBox();
-  toast("已填入 requestId=" + lastCmdCache.requestId, true);
+  fillRequestIdInto(null, lastCmdCache.requestId);
 }
 
 // ==================== 场景列表 ====================
@@ -2129,25 +2138,47 @@ function fetchMsgs() {
     .then(function (d) {
       var box = document.getElementById("msgs");
       var list = d.messages || [];
-      // 距底部 < 80px 视为"在底部"，需要自动跟随
       var nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
-      var countChanged = (window.__msgCount !== list.length);
-      window.__msgCount = list.length;
 
-      box.innerHTML = "";
+      // ★ 增量更新：只追加新消息，不清空 DOM
+      //   （清空重建会导致：选中文字丢失、滚动条跳动）
+      var rendered = window.__msgRendered || 0;
+      var filterChanged = (window.__msgFilter !== filter);
+
+      if (list.length < rendered || filterChanged) {
+        // 消息变少了（清空）或过滤条件变了 → 全量重建
+        box.innerHTML = "";
+        rendered = 0;
+        window.__msgFilter = filter;
+      }
+
       if (!list.length) {
-        box.innerHTML = '<div class="empty">还没有消息<br>' +
-          '<span style="font-size:10.5px;color:#718096;">' +
-          '连接后：平台下发的命令会显示在这里（绿色）<br>' +
-          '你手动发送或自动场景回报的内容也会显示（蓝色）</span></div>';
+        if (!box.querySelector(".empty")) {
+          box.innerHTML = '<div class="empty">还没有消息<br>' +
+            '<span style="font-size:10.5px;color:#718096;">' +
+            '连接后：平台下发的命令会显示在这里（绿色）<br>' +
+            '你手动发送或自动场景回报的内容也会显示（蓝色）</span></div>';
+        }
+        window.__msgRendered = 0;
         return;
       }
-      list.forEach(function (msg) { box.appendChild(buildMsgEl(msg)); });
 
-      // ★ 新消息到达时：如果用户没往上翻，自动滚到底
-      if (countChanged && !msgUserScrolledUp) {
+      // 移除空状态提示
+      var emptyEl = box.querySelector(".empty");
+      if (emptyEl) emptyEl.remove();
+
+      // 只追加新的
+      for (var i = rendered; i < list.length; i++) {
+        box.appendChild(buildMsgEl(list[i]));
+      }
+      var appended = list.length - rendered;
+      window.__msgRendered = list.length;
+      window.__msgCount = list.length;
+
+      // 新消息到达时：如果用户没往上翻，自动滚到底
+      if (appended > 0 && !msgUserScrolledUp) {
         box.scrollTop = box.scrollHeight;
-      } else if (nearBottom) {
+      } else if (appended > 0 && nearBottom) {
         box.scrollTop = box.scrollHeight;
       }
     }).catch(function () {});
