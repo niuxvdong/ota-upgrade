@@ -95,7 +95,8 @@ class DeviceManager:
 
     def __init__(self, device_id=None):
         self.device_id = device_id or m.DEVICE_ID
-        self.lock = threading.Lock()
+        # ★ RLock：status()/connect() 等在持锁时会调用同样加锁的方法
+        self.lock = threading.RLock()
         self._file_lock = threading.Lock()
         self.client = None
         self.connected = False
@@ -1158,7 +1159,8 @@ class MultiDeviceManager:
     """
 
     def __init__(self):
-        self.lock = threading.Lock()
+        # ★ 用 RLock：_get_or_create / sync_* 会在持锁时再次进入（记录日志等）
+        self.lock = threading.RLock()
         self.multi_mode = False          # 是否启用多终端
         self.device_ids = [m.DEVICE_ID]  # 终端列表
         # ★ 顶部输入框的 deviceId（由前端同步，不依赖连接后的 config）
@@ -1169,21 +1171,30 @@ class MultiDeviceManager:
 
     # ---------- 初始化 ----------
     def _get_or_create(self, device_id):
+        # 快路径：已存在直接返回
         with self.lock:
             mgr = self.managers.get(device_id)
-            if mgr is not None:
-                return mgr
-            mgr = DeviceManager(device_id)
-            # 复用主配置的单例字段
-            mgr.ota_type = MANAGER.ota_type
-            mgr.module_type = MANAGER.module_type
-            mgr.scenario_overrides = MANAGER.scenario_overrides
-            mgr.custom_scenarios = MANAGER.custom_scenarios
-            mgr.status_buttons = MANAGER.status_buttons
-            mgr.register_template = MANAGER.register_template
-            mgr.auto_scenario = MANAGER.auto_scenario
-            # 日志转发到聚合日志（带 deviceId 前缀）
-            mgr.log_sink = lambda msg, _d=device_id: self._agg(_d, msg)
+        if mgr is not None:
+            return mgr
+
+        # 慢路径：在锁外创建（避免 super.__init__ / 字段赋值期间的重入）
+        mgr = DeviceManager(device_id)
+        # 复用主配置的单例字段
+        mgr.ota_type = MANAGER.ota_type
+        mgr.module_type = MANAGER.module_type
+        mgr.scenario_overrides = MANAGER.scenario_overrides
+        mgr.custom_scenarios = MANAGER.custom_scenarios
+        mgr.status_buttons = MANAGER.status_buttons
+        mgr.register_template = MANAGER.register_template
+        mgr.auto_scenario = MANAGER.auto_scenario
+        # 日志转发到聚合日志（带 deviceId 前缀）
+        mgr.log_sink = lambda msg, _d=device_id: self._agg(_d, msg)
+
+        # 双检锁写入
+        with self.lock:
+            existing = self.managers.get(device_id)
+            if existing is not None:
+                return existing
             self.managers[device_id] = mgr
             return mgr
 
